@@ -1,0 +1,44 @@
+[project]
+name = "imprint-memory"
+version = "0.1.0"
+description = "Persistent memory system for Claude Code — hybrid search (FTS5 + vector), message bus, task queue"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Qizhan7" }]
+keywords = ["claude", "mcp", "memory", "ai", "agent"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "mcp[cli]>=1.0.0",
+]
+
+[project.optional-dependencies]
+http = [
+    "uvicorn>=0.34.0",
+    "starlette>=0.27.0",
+]
+vectors = [
+    # Requires Ollama running locally with bge-m3 model
+    # No extra Python deps — uses urllib.request to call Ollama API
+]
+
+[project.urls]
+Homepage = "https://github.com/Qizhan7/imprint-memory"
+Repository = "https://github.com/Qizhan7/imprint-memory"
+Issues = "https://github.com/Qizhan7/imprint-memory/issues"
+
+[project.scripts]
+imprint-memory = "imprint_memory.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.backends"
+
+[tool.hatch.build.targets.wheel]
+packages = ["imprint_memory"]
