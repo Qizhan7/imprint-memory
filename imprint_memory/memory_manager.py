@@ -199,35 +199,38 @@ def delete_memory(memory_id: int) -> dict:
     return {"ok": True}
 
 
-def update_memory(memory_id: int, content: str, category: str, importance: int = 5) -> dict:
-    """Update a single memory by ID."""
-    content = content.strip()
-    if not content:
-        return {"ok": False, "error": "Content cannot be empty"}
-
+def update_memory(memory_id: int, content: str = "", category: str = "", importance: int = 0) -> dict:
+    """Update a single memory by ID. Only non-empty/non-zero fields are changed."""
     db = _get_db()
-    row = db.execute("SELECT id FROM memories WHERE id = ?", (memory_id,)).fetchone()
+    row = db.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
     if not row:
         db.close()
         return {"ok": False, "error": f"Memory {memory_id} not found"}
 
+    new_content = content.strip() if content.strip() else row["content"]
+    new_category = category.strip() if category.strip() else row["category"]
+    new_importance = importance if importance > 0 else row["importance"]
+
     db.execute(
         "UPDATE memories SET content = ?, category = ?, importance = ?, updated_at = ? WHERE id = ?",
-        (content, category, importance, now_str(), memory_id),
+        (new_content, new_category, new_importance, now_str(), memory_id),
     )
-    db.execute("DELETE FROM memory_vectors WHERE memory_id = ?", (memory_id,))
-
-    vec = _embed(content)
-    if vec:
-        db.execute(
-            "INSERT INTO memory_vectors (memory_id, embedding, model) VALUES (?, ?, ?)",
-            (memory_id, _vec_to_blob(vec), EMBED_MODEL),
-        )
+    # Only refresh embedding if content changed
+    vec_refreshed = False
+    if new_content != row["content"]:
+        db.execute("DELETE FROM memory_vectors WHERE memory_id = ?", (memory_id,))
+        vec = _embed(new_content)
+        if vec:
+            db.execute(
+                "INSERT INTO memory_vectors (memory_id, embedding, model) VALUES (?, ?, ?)",
+                (memory_id, _vec_to_blob(vec), EMBED_MODEL),
+            )
+            vec_refreshed = True
 
     db.commit()
     db.close()
     _rebuild_index()
-    return {"ok": True, "embedding_refreshed": bool(vec)}
+    return {"ok": True, "embedding_refreshed": vec_refreshed}
 
 
 def search(query: str, limit: int = 10, category: Optional[str] = None) -> list[dict]:
@@ -342,12 +345,12 @@ def search_text(query: str, limit: int = 10) -> str:
 
 
 def get_all(category: Optional[str] = None, limit: int = 50) -> list[dict]:
-    """Get all memories (by time desc)."""
+    """Get all active memories (by time desc). Excludes superseded memories."""
     db = _get_db()
-    cat_filter = "WHERE category = ?" if category else ""
+    cat_filter = "AND category = ?" if category else ""
     params = (category,) if category else ()
     rows = db.execute(
-        f"SELECT * FROM memories {cat_filter} ORDER BY created_at DESC LIMIT ?",
+        f"SELECT * FROM memories WHERE superseded_by IS NULL {cat_filter} ORDER BY created_at DESC LIMIT ?",
         (*params, limit),
     ).fetchall()
     db.close()
@@ -627,11 +630,11 @@ def _rebuild_index():
     db = _get_db()
     lines = ["# Memory Index\n", f"*Last updated: {now_str()}*\n"]
 
-    total = db.execute("SELECT COUNT(*) as c FROM memories").fetchone()["c"]
+    total = db.execute("SELECT COUNT(*) as c FROM memories WHERE superseded_by IS NULL").fetchone()["c"]
     lines.append(f"*{total} memories*\n")
 
     categories = db.execute(
-        "SELECT DISTINCT category FROM memories ORDER BY category"
+        "SELECT DISTINCT category FROM memories WHERE superseded_by IS NULL ORDER BY category"
     ).fetchall()
 
     char_count = sum(len(l) for l in lines)
@@ -639,7 +642,7 @@ def _rebuild_index():
         cat = cat_row["category"]
         rows = db.execute(
             """SELECT content, source, created_at, importance
-               FROM memories WHERE category = ?
+               FROM memories WHERE category = ? AND superseded_by IS NULL
                ORDER BY importance DESC, created_at DESC""",
             (cat,),
         ).fetchall()
@@ -666,38 +669,3 @@ def _rebuild_index():
         f.write("\n".join(lines) + "\n")
 
 
-# ─── Data Migration ──────────────────────────────────────
-
-def migrate_from_json(json_path: Optional[str] = None):
-    """Migrate from legacy memory.json to SQLite."""
-    from .db import PROJECT_DIR as _proj_dir
-    if json_path is None:
-        json_path = _proj_dir / "memories" / "memory.json"
-
-    path = Path(json_path)
-    if not path.exists():
-        return "No legacy memory.json found"
-
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    count = 0
-    for category, items in data.items():
-        if category == "notifications":
-            for item in items:
-                record_notification(item.get("content", ""))
-                count += 1
-        else:
-            for item in items:
-                result = remember(
-                    content=item.get("content", ""),
-                    category=category,
-                    source=item.get("source", "system"),
-                    importance=7 if category == "facts" else 5,
-                )
-                if "Remembered" in result:
-                    count += 1
-
-    backup_path = path.with_suffix(".json.bak")
-    path.rename(backup_path)
-    return f"Migration complete: {count} memories. Old file backed up to {backup_path}"
