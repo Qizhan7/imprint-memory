@@ -3,7 +3,8 @@ Conversation log — Layer 3 of the memory architecture.
 Stores full conversation history from all platforms with FTS5 search.
 """
 
-from .db import _get_db, now_str
+from .db import _get_db, now_str, LOCAL_TZ, PROJECT_DIR
+from datetime import datetime
 
 
 def log_message(
@@ -14,6 +15,7 @@ def log_message(
     session_id: str = "",
     entrypoint: str = "",
     created_at: str = "",
+    summary: str = "",
 ) -> dict:
     """Write one message to conversation_log."""
     if not content or not content.strip():
@@ -24,9 +26,9 @@ def log_message(
     try:
         cur = db.execute(
             """INSERT INTO conversation_log
-               (platform, direction, speaker, content, session_id, entrypoint, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (platform, direction, speaker, content.strip(), session_id, entrypoint, ts),
+               (platform, direction, speaker, content, session_id, entrypoint, created_at, summary)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (platform, direction, speaker, content.strip(), session_id, entrypoint, ts, summary),
         )
         db.commit()
         return {"ok": True, "id": cur.lastrowid}
@@ -65,20 +67,29 @@ def search_conversations(
         db.close()
 
 
-def get_recent(platform: str = "", limit: int = 30) -> list[dict]:
-    """Get the most recent N messages, optionally filtered by platform."""
+def get_recent(platform: str = "", exclude_platforms: list = None, limit: int = 30) -> list[dict]:
+    """Get the most recent N messages, optionally filtered by platform.
+    exclude_platforms: list of platforms to skip (for cross-channel context)."""
     db = _get_db()
     try:
         if platform:
             rows = db.execute(
-                """SELECT id, platform, direction, speaker, content, session_id, entrypoint, created_at
+                """SELECT id, platform, direction, speaker, content, session_id, entrypoint, created_at, summary
                    FROM conversation_log WHERE platform = ?
                    ORDER BY id DESC LIMIT ?""",
                 (platform, limit),
             ).fetchall()
+        elif exclude_platforms:
+            placeholders = ",".join("?" for _ in exclude_platforms)
+            rows = db.execute(
+                f"""SELECT id, platform, direction, speaker, content, session_id, entrypoint, created_at, summary
+                   FROM conversation_log WHERE platform NOT IN ({placeholders})
+                   ORDER BY id DESC LIMIT ?""",
+                (*exclude_platforms, limit),
+            ).fetchall()
         else:
             rows = db.execute(
-                """SELECT id, platform, direction, speaker, content, session_id, entrypoint, created_at
+                """SELECT id, platform, direction, speaker, content, session_id, entrypoint, created_at, summary
                    FROM conversation_log ORDER BY id DESC LIMIT ?""",
                 (limit,),
             ).fetchall()
@@ -87,31 +98,44 @@ def get_recent(platform: str = "", limit: int = 30) -> list[dict]:
         db.close()
 
 
-def format_recent(messages: list[dict], max_content_len: int = 100) -> str:
-    """Format recent messages for display."""
-    platform_short: dict[str, str] = {}  # users can override; e.g. {"telegram": "tg"}
+def format_recent(messages: list[dict], max_content_len: int = 300) -> str:
+    """Format recent messages for recent_context.md.
+    Uses pre-computed summary if available; falls back to truncation."""
+    platform_short = {"telegram": "tg", "wechat": "wx", "cc": "cc", "heartbeat": "hb"}
     lines = []
     for m in messages:
         p = platform_short.get(m["platform"], m["platform"])
         d = "in" if m["direction"] == "in" else "out"
         ts = m["created_at"]
+        # Show only MM-DD HH:MM
         if len(ts) >= 16:
             ts = ts[5:16]
+
+        summary = m.get("summary", "")
         content = m["content"]
-        if len(content) > max_content_len:
-            content = content[:max_content_len] + "..."
-        lines.append(f"[{ts} {p}/{d}] {content}")
+
+        if summary:
+            # Has AI summary — use it with tag
+            display = f"[摘要] {summary}"
+        elif len(content) > max_content_len:
+            # No summary, too long — truncate as fallback
+            display = content[:max_content_len] + "..."
+        else:
+            # Short enough — original text
+            display = content
+
+        lines.append(f"[{ts} {p}/{d}] {display}")
     return "\n".join(lines)
 
 
 def format_search_results(results: list[dict]) -> str:
     """Format search results for MCP tool output."""
     if not results:
-        return "No matching conversation records found"
+        return "没有找到相关对话记录"
     lines = []
     for r in results:
         p = r["platform"]
-        d = "\u2190" if r["direction"] == "in" else "\u2192"
+        d = "←" if r["direction"] == "in" else "→"
         ts = r["created_at"]
         content = r["content"]
         if len(content) > 200:
