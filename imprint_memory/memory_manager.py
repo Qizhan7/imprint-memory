@@ -559,7 +559,7 @@ def decay(days: int = 30, dry_run: bool = True) -> dict:
     rows = db.execute("""
         SELECT id, content, category, importance, recalled_count, created_at
         FROM memories
-        WHERE updated_at < ? AND recalled_count < 2
+        WHERE COALESCE(updated_at, created_at) < ? AND recalled_count < 2
             AND superseded_by IS NULL AND importance > 0
         ORDER BY importance ASC, created_at ASC
     """, (cutoff,)).fetchall()

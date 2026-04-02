@@ -42,6 +42,10 @@ def search_conversations(
     """FTS5 keyword search over conversation history."""
     db = _get_db()
     try:
+        # Sanitize query for FTS5: strip special chars that could cause parse errors
+        safe_query = _sanitize_fts_query(query)
+        if not safe_query:
+            return []
         if platform:
             rows = db.execute(
                 """SELECT c.id, c.platform, c.direction, c.speaker, c.content,
@@ -50,7 +54,7 @@ def search_conversations(
                    JOIN conversation_log c ON c.id = f.rowid
                    WHERE conversation_log_fts MATCH ? AND c.platform = ?
                    ORDER BY c.id DESC LIMIT ?""",
-                (query, platform, limit),
+                (safe_query, platform, limit),
             ).fetchall()
         else:
             rows = db.execute(
@@ -60,11 +64,25 @@ def search_conversations(
                    JOIN conversation_log c ON c.id = f.rowid
                    WHERE conversation_log_fts MATCH ?
                    ORDER BY c.id DESC LIMIT ?""",
-                (query, limit),
+                (safe_query, limit),
             ).fetchall()
         return [dict(r) for r in rows]
+    except Exception:
+        # FTS5 MATCH can still fail on unusual input; fall back to empty results
+        return []
     finally:
         db.close()
+
+
+def _sanitize_fts_query(query: str) -> str:
+    """Sanitize a query string for FTS5 MATCH.
+    Removes operators and special characters that could cause parse errors."""
+    import re
+    # Strip FTS5 operators and special characters
+    cleaned = re.sub(r'["\(\)\*\:\^\{\}]', ' ', query)
+    # Collapse whitespace
+    cleaned = ' '.join(cleaned.split())
+    return cleaned.strip()
 
 
 def get_recent(platform: str = "", exclude_platforms: list = None, limit: int = 30) -> list[dict]:
