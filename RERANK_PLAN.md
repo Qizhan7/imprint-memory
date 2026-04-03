@@ -2,8 +2,6 @@
 
 ## Background
 
-Reference: [Ombre-Brain](https://github.com/P0lar1zzZ/Ombre-Brain) — emotional memory system using Russell circumplex model + Ebbinghaus forgetting curve.
-
 **What we're keeping**: existing vector (bge-m3) + FTS5 retrieval.
 **What we're changing**: rerank layer only — how search results are scored and sorted.
 
