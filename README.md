@@ -52,7 +52,7 @@ cd imprint-memory && pip install -e .
 | `memory_daily_log` | Append to today's log |
 | `conversation_search` | Search conversation history (all platforms) |
 | `search_telegram` | Search Telegram + heartbeat conversations |
-| `search_wechat` | Search WeChat conversations |
+| `search_channel` | Search any specific channel (discord, slack, etc.) |
 | `message_bus_read` / `post` | Read/write the shared message bus |
 | `cc_execute` | Submit a task for Claude Code |
 | `cc_check` / `cc_tasks` | Check task status, list recent tasks |
@@ -119,7 +119,7 @@ OAuth credentials via `~/.imprint-oauth.json` or env vars (`OAUTH_CLIENT_ID`, `O
 
 **This package works on its own** — `pip install` and you get persistent memory in Claude Code. No other dependencies.
 
-If you also want multi-channel messaging (Telegram, WeChat), Claude.ai integration, heartbeat automation, a dashboard, and scheduled tasks, see the full system: [claude-imprint](https://github.com/Qizhan7/claude-imprint). It installs imprint-memory as a dependency.
+If you also want multi-channel messaging (Telegram, etc.), Claude.ai integration, heartbeat automation, a dashboard, and scheduled tasks, see the full system: [claude-imprint](https://github.com/Qizhan7/claude-imprint). It installs imprint-memory as a dependency.
 
 ## License
 

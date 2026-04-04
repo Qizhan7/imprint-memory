@@ -199,10 +199,10 @@ def search_telegram(query: str, limit: int = 20) -> str:
 
 
 @mcp.tool()
-def search_wechat(query: str, limit: int = 20) -> str:
-    """Search WeChat conversations — includes all WeChat channel chats.
-    Matches what you'd find by searching in WeChat."""
-    results = search_conversations(query=query, platforms=["wechat"], limit=limit)
+def search_channel(query: str, channel: str, limit: int = 20) -> str:
+    """Search conversations from a specific channel (e.g. discord, slack, wechat).
+    channel: platform name as it appears in conversation logs."""
+    results = search_conversations(query=query, platforms=[channel], limit=limit)
     return format_search_results(results)
 
 
