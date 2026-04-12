@@ -1233,6 +1233,7 @@ def unified_search(
     pools: list[str] | None = None,
     category: str | None = None,
     platform: str = "",
+    _internal: bool = False,
 ) -> list[dict]:
     """Search across all memory pools with RRF fusion and per-pool reranking.
 
@@ -1242,6 +1243,7 @@ def unified_search(
         pools:    subset of ["memory", "bank", "conversation"]; None = all
         category: filter memory pool by category
         platform: filter conversation pool by platform
+        _internal: skip side-effects (recalled_count, last_accessed_at) — for edge expansion
 
     Returns list of dicts sorted by final score, each containing:
         pool, score, rrf_raw, id, content, + pool-specific fields
@@ -1323,20 +1325,28 @@ def unified_search(
         results = _expand_via_edges(results, db, max_expand=3)
 
     # Side-effect: update last_accessed_at + recalled_count
-    mem_ids = [r["id"] for r in results if r.get("pool") == "memory"]
-    if mem_ids:
-        now = now_str()
-        for mid in mem_ids:
-            db.execute(
-                "UPDATE memories SET recalled_count = recalled_count + 1, "
-                "last_accessed_at = ? WHERE id = ?",
-                (now, mid),
-            )
-        db.commit()
+    if not _internal:
+        mem_ids = [r["id"] for r in results if r.get("pool") == "memory"]
+        if mem_ids:
+            now = now_str()
+            for mid in mem_ids:
+                db.execute(
+                    "UPDATE memories SET recalled_count = recalled_count + 1, "
+                    "last_accessed_at = ? WHERE id = ?",
+                    (now, mid),
+                )
+            db.commit()
 
     db.close()
     return results
 
+
+_LOCALE_LABELS = {
+    "en": {"memory": "Memory", "bank": "Bank", "conversation": "Conversation",
+           "empty": "No matching results found"},
+    "zh": {"memory": "记忆", "bank": "知识库", "conversation": "对话",
+           "empty": "没有找到匹配的结果"},
+}
 
 def unified_search_text(
     query: str,
@@ -1344,12 +1354,15 @@ def unified_search_text(
     pools: list[str] | None = None,
     platform: str = "",
 ) -> str:
-    """Format unified search results as readable text."""
+    """Format unified search results as readable text.
+    Set IMPRINT_LOCALE=zh for Chinese labels, default English."""
     results = unified_search(query, limit=limit, pools=pools, platform=platform)
+    locale = os.environ.get("IMPRINT_LOCALE", "en")
+    loc = _LOCALE_LABELS.get(locale, _LOCALE_LABELS["en"])
     if not results:
-        return "No matching results found"
+        return loc["empty"]
 
-    _labels = {"memory": "Memory", "bank": "Bank", "conversation": "Conversation"}
+    _labels = {k: loc[k] for k in ("memory", "bank", "conversation")}
     lines: list[str] = []
 
     for r in results:
