@@ -76,9 +76,16 @@ def memory_daily_log(text: str) -> str:
 
 
 @mcp.tool()
-def memory_list(category: Optional[str] = None, limit: int = 20) -> str:
-    """List memories (newest first)."""
-    items = get_all(category=category, limit=limit)
+def memory_list(category: Optional[str] = None, source: Optional[str] = None, limit: int = 20) -> str:
+    """List memories (newest first).
+    category: filter by category (optional)
+    source: filter by source (optional) — pass your own name to see what you wrote recently
+    limit: max count (default 20)"""
+    fetch_limit = limit * 5 if source else limit
+    items = get_all(category=category, limit=fetch_limit)
+    if source:
+        items = [i for i in items if i.get("source") == source]
+        items = items[:limit]
     if not items:
         return "No memories yet"
     lines = []
