@@ -45,12 +45,14 @@ mcp = FastMCP(
 # --- Memory Tools -----------------------------------------------------
 
 @mcp.tool()
-def memory_remember(content: str, category: str = "general", source: str = "cc", importance: int = 5) -> str:
+def memory_remember(content: str, category: str = "general", source: str = "cc", importance: int = 5, tags: list = None) -> str:
     """Store a memory. Call this when you encounter important information worth recalling in future conversations.
     category: facts/events/tasks/experience/general
     source: free-form label for where the info came from (e.g. cc, chat, api)
+    importance: 1-10 (default 5)
+    tags: optional list of strings for filtering/categorization (e.g. ["anchor", "important"])
     DO NOT store: code patterns/file paths derivable from the codebase, git history, or info already in CLAUDE.md."""
-    return remember(content=content, category=category, source=source, importance=importance)
+    return remember(content=content, category=category, source=source, importance=importance, tags=tags)
 
 
 @mcp.tool()
@@ -74,9 +76,16 @@ def memory_daily_log(text: str) -> str:
 
 
 @mcp.tool()
-def memory_list(category: Optional[str] = None, limit: int = 20) -> str:
-    """List memories (newest first)."""
-    items = get_all(category=category, limit=limit)
+def memory_list(category: Optional[str] = None, source: Optional[str] = None, limit: int = 20) -> str:
+    """List memories (newest first).
+    category: filter by category (optional)
+    source: filter by source (optional) — pass your own name to see what you wrote recently
+    limit: max count (default 20)"""
+    fetch_limit = limit * 5 if source else limit
+    items = get_all(category=category, limit=fetch_limit)
+    if source:
+        items = [i for i in items if i.get("source") == source]
+        items = items[:limit]
     if not items:
         return "No memories yet"
     lines = []
