@@ -4,6 +4,25 @@ Persistent memory system for [Claude Code](https://docs.anthropic.com/en/docs/cl
 
 Built as an [MCP server](https://modelcontextprotocol.io/) — works locally (stdio) or remotely via HTTP with OAuth.
 
+## About this fork
+
+This is a fork of [Qizhan7/imprint-memory](https://github.com/Qizhan7/imprint-memory), maintained for the [her-claudes-memory](https://github.com/yunxiao0120/her-claudes-memory) project's specific needs. The core memory architecture (FTS5 + vector embeddings + RRF ranking + jieba CJK + SQLite WAL) is Qizhan7's design — full credit to her.
+
+**If you want the original maintainer's pure version, install from upstream:**
+
+```bash
+pip install git+https://github.com/Qizhan7/imprint-memory.git
+```
+
+**This fork adds the following her-claudes-memory-specific features:**
+
+- `memory_recent` (renamed from `memory_list`, with `source` filter parameter)
+- `tags` parameter on `memory_remember` (PR pending upstream)
+- 5 admin tools for managing the source/category enum config (`memory_admin_list_enums`, `memory_admin_add_name`, etc.) — depends on a `config/enums.json` file
+- `bulletin_post` tool for posting to her-claudes-memory's bulletin board (depends on a `HER_BULLETIN_URL` endpoint)
+
+These changes are project-specific and not intended for upstream — install this fork only if you're using her-claudes-memory.
+
 ## Features
 
 - **Hybrid search** — FTS5 full-text + vector embeddings + exact-match, fused with [RRF](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) ranking and time-decay scoring

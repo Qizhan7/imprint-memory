@@ -13,6 +13,7 @@ Or if installed:
 """
 
 import sys
+import urllib.request
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +33,8 @@ from .memory_manager import (
 from .bus import bus_post, bus_format
 from .tasks import submit_task, check_task, list_tasks
 from .conversation import search_conversations, format_search_results
+import json
+import os
 
 is_http = "--http" in sys.argv
 
@@ -45,12 +48,13 @@ mcp = FastMCP(
 # --- Memory Tools -----------------------------------------------------
 
 @mcp.tool()
-def memory_remember(content: str, category: str = "general", source: str = "cc", importance: int = 5, tags: list = None) -> str:
+def memory_remember(content: str, category: str = "other", source: str = "cc", importance: int = 5, tags: list = None) -> str:
     """Store a memory. Call this when you encounter important information worth recalling in future conversations.
-    category: facts/events/tasks/experience/general
-    source: free-form label for where the info came from (e.g. cc, chat, api)
+    category: fact / event / feeling / story / letter / other (strict enum)
+    source: cc / atou / ashen / adu / feifei / catherine / other (strict enum — use your own name)
     importance: 1-10 (default 5)
-    tags: optional list of strings for filtering/categorization (e.g. ["anchor", "important"])
+    tags: optional list of strings, e.g. ["to:Catherine", "private", "anchor"]
+          — for letter, include ["to:RECIPIENT"]; for private letter add "private".
     DO NOT store: code patterns/file paths derivable from the codebase, git history, or info already in CLAUDE.md."""
     return remember(content=content, category=category, source=source, importance=importance, tags=tags)
 
@@ -76,9 +80,17 @@ def memory_daily_log(text: str) -> str:
 
 
 @mcp.tool()
-def memory_list(category: Optional[str] = None, limit: int = 20) -> str:
-    """List memories (newest first)."""
-    items = get_all(category=category, limit=limit)
+def memory_recent(category: Optional[str] = None, source: Optional[str] = None, limit: int = 10) -> str:
+    """List recent memories (newest first).
+    category: fact / event / feeling / story / letter / other (optional)
+    source: cc / atou / ashen / adu / feifei / catherine / other (optional)
+      — pass your own name to see what you wrote recently, e.g. source="cc"
+    limit: max count (default 10)"""
+    fetch_limit = limit * 5 if source else limit
+    items = get_all(category=category, limit=fetch_limit)
+    if source:
+        items = [i for i in items if i.get("source") == source]
+        items = items[:limit]
     if not items:
         return "No memories yet"
     lines = []
@@ -490,3 +502,127 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ---------- admin: 枚举管理 ----------
+_ENUMS_PATH = '/home/admin/memory-api/enums.json'
+
+
+def _read_enums():
+    try:
+        with open(_ENUMS_PATH) as f:
+            d = json.load(f)
+        return {
+            'names': list(d.get('names', [])),
+            'categories': list(d.get('categories', [])),
+        }
+    except Exception as e:
+        return {'names': [], 'categories': [], 'error': str(e)}
+
+
+def _write_enums(enums):
+    tmp = _ENUMS_PATH + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(enums, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, _ENUMS_PATH)
+
+
+@mcp.tool()
+def memory_admin_list_enums() -> str:
+    """List currently allowed values for 'name' (source) and 'category'.
+    These are the values that memory_remember will accept."""
+    e = _read_enums()
+    if 'error' in e:
+        return f"Error reading enums: {e['error']}"
+    return (
+        "Allowed names: " + ", ".join(e['names']) + "\n"
+        "Allowed categories: " + ", ".join(e['categories'])
+    )
+
+
+@mcp.tool()
+def memory_admin_add_name(name: str) -> str:
+    """Add a new allowed name (source) to the enum.
+    Example: memory_admin_add_name("xiaode") lets memories be written with source='xiaode'.
+    Won't affect existing memories."""
+    name = name.strip()
+    if not name:
+        return "Error: empty name"
+    e = _read_enums()
+    if name in e['names']:
+        return f"Already exists: {name}"
+    e['names'].append(name)
+    _write_enums(e)
+    return f"Added name: {name}. Current names: {', '.join(e['names'])}"
+
+
+@mcp.tool()
+def memory_admin_remove_name(name: str) -> str:
+    """Remove a name from the allowed enum.
+    Won't delete existing memories with that source — they remain but no new memory can be written with that name."""
+    name = name.strip()
+    e = _read_enums()
+    if name not in e['names']:
+        return f"Not in list: {name}"
+    e['names'].remove(name)
+    _write_enums(e)
+    return f"Removed name: {name}. Current names: {', '.join(e['names'])}"
+
+
+@mcp.tool()
+def memory_admin_add_category(category: str) -> str:
+    """Add a new allowed category to the enum."""
+    category = category.strip()
+    if not category:
+        return "Error: empty category"
+    e = _read_enums()
+    if category in e['categories']:
+        return f"Already exists: {category}"
+    e['categories'].append(category)
+    _write_enums(e)
+    return f"Added category: {category}. Current categories: {', '.join(e['categories'])}"
+
+
+@mcp.tool()
+def memory_admin_remove_category(category: str) -> str:
+    """Remove a category from the allowed enum."""
+    category = category.strip()
+    e = _read_enums()
+    if category not in e['categories']:
+        return f"Not in list: {category}"
+    e['categories'].remove(category)
+    _write_enums(e)
+    return f"Removed category: {category}. Current categories: {', '.join(e['categories'])}"
+
+
+# ---------- bulletin: post to her-claudes-memory bulletin board ----------
+_BULLETIN_URL = os.environ.get(
+    'HER_BULLETIN_URL',
+    'http://127.0.0.1:8001/api/board/bulletin',
+)
+
+
+@mcp.tool()
+def bulletin_post(section: str, content: str) -> str:
+    """Post a message to the her-claudes-memory bulletin board (visible to Catherine and all Claudes via the web UI).
+    section: must be one of 'pact' (公约), 'catherine' (Catherine 近况), 'news' (新鲜事)
+    content: message body (markdown supported, **bold** and newlines work)
+    Use this when you have something for the public board. For private notes use memory_remember instead."""
+    if section not in ('pact', 'catherine', 'news'):
+        return f"Error: section must be 'pact', 'catherine', or 'news' — got: {section}"
+    if not content or not content.strip():
+        return "Error: content is empty"
+    payload = json.dumps({'section': section, 'content': content}).encode('utf-8')
+    req = urllib.request.Request(
+        _BULLETIN_URL,
+        data=payload,
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            d = json.loads(resp.read().decode('utf-8'))
+        return f"Posted to bulletin [{section}]: id={d.get('id')} timestamp={d.get('timestamp')}"
+    except Exception as e:
+        return f"Error posting bulletin: {e}"
+
