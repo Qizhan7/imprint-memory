@@ -1,9 +1,10 @@
 """
 Claude Imprint — Memory System
-Pure memory operations: CRUD, hybrid search (FTS5 + bge-m3), bank indexing, daily log.
+Pure memory operations: CRUD, hybrid search (FTS5 + vector), bank indexing, daily log.
 Includes RRF unified retrieval across memory, bank, and conversation pools.
 """
 
+import base64
 import json
 import math
 import os
@@ -23,7 +24,7 @@ from .db import (
 )
 
 # ─── Embedding Config ────────────────────────────────────
-EMBED_PROVIDER = os.environ.get("EMBED_PROVIDER", "ollama")  # "ollama" or "openai"
+EMBED_PROVIDER = os.environ.get("EMBED_PROVIDER", "google")  # "google", "ollama", or "openai"
 
 # Ollama settings
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
@@ -32,8 +33,23 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 EMBED_API_BASE = os.environ.get("EMBED_API_BASE", "https://api.openai.com")
 
+# Google Gemini Embedding settings
+# Supports multiple keys for rotation: comma-separated in GOOGLE_API_KEYS
+GOOGLE_API_KEYS: list[str] = [
+    k.strip() for k in os.environ.get("GOOGLE_API_KEYS", "").split(",") if k.strip()
+]
+if not GOOGLE_API_KEYS:
+    _single = os.environ.get("GOOGLE_API_KEY", "")
+    if _single:
+        GOOGLE_API_KEYS = [_single]
+_google_key_index = 0
+
 # Model defaults per provider
-_DEFAULT_MODELS = {"ollama": "bge-m3", "openai": "text-embedding-3-small"}
+_DEFAULT_MODELS = {
+    "ollama": "bge-m3",
+    "openai": "text-embedding-3-small",
+    "google": "gemini-embedding-2",
+}
 EMBED_MODEL = os.environ.get("EMBED_MODEL", _DEFAULT_MODELS.get(EMBED_PROVIDER, "bge-m3"))
 
 BANK_INDEX_VERSION = 2
@@ -92,9 +108,66 @@ def _embed_openai(text: str) -> Optional[list[float]]:
     return None
 
 
-def _embed(text: str) -> Optional[list[float]]:
+def _next_google_key() -> Optional[str]:
+    """Round-robin through available Google API keys."""
+    global _google_key_index
+    if not GOOGLE_API_KEYS:
+        return None
+    key = GOOGLE_API_KEYS[_google_key_index % len(GOOGLE_API_KEYS)]
+    _google_key_index += 1
+    return key
+
+
+def _embed_google(text: str, image_path: Optional[str] = None) -> Optional[list[float]]:
+    """Generate embedding via Google Gemini Embedding 2 API.
+    Supports text and optional image (multimodal)."""
+    api_key = _next_google_key()
+    if not api_key:
+        return None
+    try:
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{EMBED_MODEL}:embedContent?key={api_key}"
+        )
+        parts: list[dict] = [{"text": text}]
+        if image_path:
+            img_path = Path(image_path)
+            if img_path.exists():
+                img_bytes = img_path.read_bytes()
+                ext = img_path.suffix.lower()
+                mime_map = {".png": "image/png", ".jpg": "image/jpeg",
+                            ".jpeg": "image/jpeg", ".gif": "image/gif",
+                            ".webp": "image/webp"}
+                mime = mime_map.get(ext, "image/png")
+                parts.append({
+                    "inline_data": {
+                        "mime_type": mime,
+                        "data": base64.b64encode(img_bytes).decode("ascii"),
+                    }
+                })
+        payload = json.dumps({"content": {"parts": parts}}).encode()
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+            embedding = data.get("embedding", {})
+            values = embedding.get("values", [])
+            if values:
+                return values
+    except Exception:
+        pass
+    return None
+
+
+def _embed(text: str, image_path: Optional[str] = None) -> Optional[list[float]]:
     """Generate embedding vector using configured provider.
-    Returns None on failure (search falls back to FTS5 keyword only)."""
+    Returns None on failure (search falls back to FTS5 keyword only).
+    image_path is only supported with the 'google' provider."""
+    if EMBED_PROVIDER == "google":
+        return _embed_google(text, image_path=image_path)
     if EMBED_PROVIDER == "openai":
         return _embed_openai(text)
     return _embed_ollama(text)
@@ -138,7 +211,8 @@ def datetime_strptime(s: str):
 # ─── Core API ────────────────────────────────────────────
 
 def remember(content: str, category: str = "general", source: str = "cc",
-             tags: Optional[list[str]] = None, importance: int = 5) -> str:
+             tags: Optional[list[str]] = None, importance: int = 5,
+             created_at: str = "") -> str:
     """Store a memory with automatic dedup and conflict detection.
     - Exact duplicate content → skip
     - Semantic similarity ≥ 0.92 → skip (nearly identical)
@@ -179,12 +253,12 @@ def remember(content: str, category: str = "general", source: str = "cc",
                 supersede_ids.append((r["id"], r["content"][:40], sim))
 
     tags_json = json.dumps(tags or [], ensure_ascii=False)
-    now = now_str()
+    ts = created_at if created_at else now_str()
 
     cursor = db.execute(
         """INSERT INTO memories (content, category, source, tags, importance, created_at)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        (content, category, source, tags_json, importance, now),
+        (content, category, source, tags_json, importance, ts),
     )
     memory_id = cursor.lastrowid
 
@@ -523,14 +597,15 @@ def find_duplicates(threshold: float = 0.85) -> list[dict]:
 
 
 def reindex_embeddings() -> str:
-    """Rebuild all memory embeddings using the current provider.
-    Useful after switching embedding providers (e.g., ollama → openai)."""
+    """Rebuild all memory + bank embeddings using the current provider.
+    Useful after switching embedding providers (e.g., ollama → google)."""
     db = _get_db()
-    rows = db.execute("SELECT id, content FROM memories").fetchall()
-    total = len(rows)
-    updated = 0
-    failed = 0
 
+    # Reindex memories
+    rows = db.execute("SELECT id, content FROM memories").fetchall()
+    mem_total = len(rows)
+    mem_ok = 0
+    mem_fail = 0
     for r in rows:
         vec = _embed(r["content"])
         db.execute("DELETE FROM memory_vectors WHERE memory_id = ?", (r["id"],))
@@ -539,13 +614,28 @@ def reindex_embeddings() -> str:
                 "INSERT INTO memory_vectors (memory_id, embedding, model) VALUES (?, ?, ?)",
                 (r["id"], _vec_to_blob(vec), EMBED_MODEL),
             )
-            updated += 1
+            mem_ok += 1
         else:
-            failed += 1
+            mem_fail += 1
+
+    # Reindex bank chunks
+    bank_rows = db.execute("SELECT id, chunk_text FROM bank_chunks").fetchall()
+    bank_total = len(bank_rows)
+    bank_ok = 0
+    for br in bank_rows:
+        vec = _embed(br["chunk_text"])
+        blob = _vec_to_blob(vec) if vec else None
+        db.execute("UPDATE bank_chunks SET embedding = ? WHERE id = ?", (blob, br["id"]))
+        if vec:
+            bank_ok += 1
 
     db.commit()
     db.close()
-    return f"Reindexed {updated}/{total} memories ({failed} failed). Provider: {EMBED_PROVIDER}, model: {EMBED_MODEL}"
+    return (
+        f"Reindexed memories: {mem_ok}/{mem_total} ({mem_fail} failed), "
+        f"bank chunks: {bank_ok}/{bank_total}. "
+        f"Provider: {EMBED_PROVIDER}, model: {EMBED_MODEL}"
+    )
 
 
 def find_stale(days: int = 14) -> list[dict]:
@@ -683,15 +773,24 @@ def _clean_bank_chunk(chunk: str) -> Optional[str]:
     return cleaned
 
 
-_BANK_EXCLUDE = set(
-    f.strip() for f in os.environ.get("IMPRINT_BANK_EXCLUDE", "").split(",") if f.strip()
-)
+_BANK_EXCLUDE = {"north-todos.md", "backlog.md"}
 
 def _index_bank_files():
     """Index markdown files in bank/ directory. Skip unchanged files."""
     if not BANK_DIR.exists():
         return
     db = _get_db()
+
+    valid_paths = {
+        str(p.resolve())
+        for p in BANK_DIR.glob("*.md")
+        if p.name not in _BANK_EXCLUDE
+    }
+    indexed = db.execute("SELECT DISTINCT file_path FROM bank_chunks").fetchall()
+    for row in indexed:
+        if row["file_path"] not in valid_paths:
+            db.execute("DELETE FROM bank_chunks WHERE file_path = ?", (row["file_path"],))
+
     for md_file in BANK_DIR.glob("*.md"):
         if md_file.name in _BANK_EXCLUDE:
             continue
@@ -853,9 +952,12 @@ def _rebuild_index():
 
 RRF_K = 60              # RRF ranking constant (standard value)
 VEC_PRE_FILTER = 0.3    # Vector similarity pre-filter threshold
-MIN_FINAL_SCORE = 0.003 # Drop results below this after reranking
+MIN_FINAL_SCORE = 0.003 # Pre-normalization floor (RRF-level)
+POST_NORM_FLOOR = 0.15  # Post-normalization floor (after pool-confidence scaling)
 RERANK_BLEND = 0.3      # How much rerank factors affect final score
 LIKE_LIMIT = 50         # Max results from LIKE exact-match channel per pool
+VEC_CONFIDENCE_NOISE = 0.40   # vec_sim below this → pool is noise
+VEC_CONFIDENCE_GOOD = 0.55    # vec_sim above this → pool is clearly relevant
 
 
 def _days_since(time_str: str, default: float = 30.0) -> float:
@@ -1234,7 +1336,12 @@ def _expand_via_edges(results: list[dict], db, max_expand: int = 3) -> list[dict
                     **dict(neighbor),
                 })
                 db.execute(
-                    "UPDATE memory_edges SET surfaced_count = surfaced_count + 1 WHERE id = ?",
+                    """UPDATE memory_edges
+                       SET surfaced_count = surfaced_count + 1,
+                           strength = min(coalesce(strength, 1.0) + 0.1, 5.0),
+                           last_surfaced_at = datetime('now'),
+                           status = CASE WHEN status = 'dormant' THEN 'active' ELSE status END
+                       WHERE id = ?""",
                     (edge["id"],),
                 )
 
@@ -1264,7 +1371,6 @@ def unified_search(
         pools:    subset of ["memory", "bank", "conversation"]; None = all
         category: filter memory pool by category
         platform: filter conversation pool by platform
-        after/before: ISO date strings to filter by time range
         _internal: skip side-effects (recalled_count, last_accessed_at) — for edge expansion
 
     Returns list of dicts sorted by final score, each containing:
@@ -1332,14 +1438,22 @@ def unified_search(
             "pool": pool, "score": reranked, "rrf_raw": rrf, **detail
         })
 
-    # Normalise within each pool so pools compete on equal footing
+    # Normalise within each pool, scaled by pool confidence.
+    # Pool confidence uses best vec_similarity — the only signal with real relevance discrimination.
     results: list[dict] = []
     for pool, items in pool_items.items():
         if not items:
             continue
         max_score = max(r["score"] for r in items)
+        max_vec = max((r.get("vec_similarity") or 0) for r in items)
+        if max_vec >= VEC_CONFIDENCE_GOOD:
+            pool_conf = 1.0
+        elif max_vec <= VEC_CONFIDENCE_NOISE:
+            pool_conf = 0.0
+        else:
+            pool_conf = (max_vec - VEC_CONFIDENCE_NOISE) / (VEC_CONFIDENCE_GOOD - VEC_CONFIDENCE_NOISE)
         for r in items:
-            r["score"] = r["score"] / max_score if max_score > 0 else 0
+            r["score"] = (r["score"] / max_score * pool_conf) if max_score > 0 else 0
         results.extend(items)
 
     # Keyword presence boost: results containing query terms get a bonus.
@@ -1352,6 +1466,7 @@ def unified_search(
         if matched:
             r["score"] += _KEYWORD_BOOST * (matched / len(query_terms))
 
+    results = [r for r in results if r["score"] >= POST_NORM_FLOOR]
     results.sort(key=lambda x: x["score"], reverse=True)
 
     # Time range filtering (after/before)
@@ -1359,7 +1474,7 @@ def unified_search(
         def _in_time_range(r):
             ts = r.get("created_at", "")
             if not ts:
-                return True
+                return True  # keep items without timestamp
             if after and ts < after:
                 return False
             if before and ts > before:
