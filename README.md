@@ -69,6 +69,8 @@ All via environment variables:
 |----------|---------|-------------|
 | `IMPRINT_DATA_DIR` | `~/.imprint/` | Base directory for all data |
 | `IMPRINT_DB` | `$IMPRINT_DATA_DIR/memory.db` | SQLite database path |
+| `IMPRINT_HOST` | `0.0.0.0` | HTTP bind address (set to `127.0.0.1` for localhost-only when behind reverse proxy) |
+| `IMPRINT_PORT` | `8000` | HTTP port |
 | `TZ_OFFSET` | `0` | Hours offset from UTC (e.g. `12` for NZST) |
 | `EMBED_PROVIDER` | `ollama` | `ollama`, `openai`, or `google` |
 | `EMBED_MODEL` | auto | Model name (default: `bge-m3` / `text-embedding-3-small` / `gemini-embedding-2`) |
