@@ -12,6 +12,7 @@ Or if installed:
   imprint-memory --http   # HTTP mode
 """
 
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -33,12 +34,16 @@ from .bus import bus_post, bus_format
 from .tasks import submit_task, check_task, list_tasks
 from .conversation import search_conversations, format_search_results
 
+# Network binding for HTTP mode (overridable via env vars)
+IMPRINT_HOST = os.environ.get("IMPRINT_HOST", "0.0.0.0")
+IMPRINT_PORT = int(os.environ.get("IMPRINT_PORT", "8000"))
+
 is_http = "--http" in sys.argv
 
 mcp = FastMCP(
     "imprint-memory",
-    host="0.0.0.0" if is_http else "127.0.0.1",
-    port=8000,
+    host=IMPRINT_HOST if is_http else "127.0.0.1",
+    port=IMPRINT_PORT,
 )
 
 
@@ -488,8 +493,8 @@ def _run_http():
     app.routes.insert(3, Route("/oauth/token", oauth_token, methods=["POST"]))
     app.add_middleware(OAuthMiddleware)
 
-    print("imprint-memory HTTP mode (OAuth): http://0.0.0.0:8000/mcp", flush=True)
-    config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
+    print(f"imprint-memory HTTP mode (OAuth): http://{IMPRINT_HOST}:{IMPRINT_PORT}/mcp", flush=True)
+    config = uvicorn.Config(app, host=IMPRINT_HOST, port=IMPRINT_PORT, log_level="info")
     server = uvicorn.Server(config)
     anyio.run(server.serve)
 
