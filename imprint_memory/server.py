@@ -12,6 +12,7 @@ Or if installed:
   imprint-memory --http   # HTTP mode
 """
 
+import os
 import sys
 from pathlib import Path
 from typing import Optional
