@@ -3264,7 +3264,13 @@ def surfacing_search(query: str, limit: int = 3) -> str:
         _q_raw = [w for w in _jcut(_task_q) if len(w.strip()) >= 2 and len(set(w.strip())) > 1]
         _q_terms = set(w for w in _q_raw if w.lower() not in _SURFACING_STOPS and w.lower() not in _db_stops)
     else:
-        _q_terms = set(w for w in _task_q.split() if len(w) >= 2 and w.lower() not in _SURFACING_STOPS and w.lower() not in _db_stops)
+        # No jieba → segment_cjk falls back to char-level: the len>=2 word
+        # filter would wipe every CJK term and the gate below returns "" for
+        # any Chinese query. Keep single chars when word-level yields nothing.
+        _seg = [w for w in segment_cjk(_task_q).split() if w.strip()]
+        _q_terms = set(w for w in _seg if len(w) >= 2 and w.lower() not in _SURFACING_STOPS and w.lower() not in _db_stops)
+        if not _q_terms:
+            _q_terms = set(w for w in _seg if w.lower() not in _SURFACING_STOPS and w.lower() not in _db_stops)
     if not _q_terms:
         return ""
     _top_content = " ".join(
@@ -3276,7 +3282,7 @@ def surfacing_search(query: str, limit: int = 3) -> str:
         # Fallback: try expanded synonyms. "平安夜" → "圣诞节" bridging.
         _expanded = _expand_query(_task_q)
         if _expanded != _task_q:
-            _exp_raw = [w for w in _jcut(_expanded) if len(w.strip()) >= 2 and len(set(w.strip())) > 1] if _JIEBA_OK else _expanded.split()
+            _exp_raw = [w for w in _jcut(_expanded) if len(w.strip()) >= 2 and len(set(w.strip())) > 1] if _JIEBA_OK else [w for w in segment_cjk(_expanded).split() if w.strip()]
             _exp_terms = set(w for w in _exp_raw if w.lower() not in _SURFACING_STOPS and w.lower() not in _db_stops)
             _matched = sum(1 for t in _exp_terms if t in _top_content)
         if _matched == 0:

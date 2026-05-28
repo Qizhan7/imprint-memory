@@ -535,8 +535,33 @@ def _run_http():
     anyio.run(server.serve)
 
 
+def _check_optional_deps() -> None:
+    """Warn about missing deps that silently degrade search. Always to stderr —
+    stdout is the MCP stdio protocol channel and must stay clean."""
+    from .db import _JIEBA_OK
+    from .memory_manager import _JIO_OK
+    try:
+        import numpy  # noqa: F401
+        numpy_ok = True
+    except ImportError:
+        numpy_ok = False
+    if not _JIEBA_OK:
+        print("[imprint-memory] WARNING: jieba missing (should auto-install) — "
+              "Chinese (CJK) search degraded to char-level, lower recall. "
+              "Fix: pip install jieba", file=sys.stderr)
+    if not numpy_ok:
+        print("[imprint-memory] WARNING: numpy missing (should auto-install) — "
+              "graph-mode retrieval (timeline/causal/origin) disabled. "
+              "Fix: pip install numpy", file=sys.stderr)
+    if not _JIO_OK:
+        print("[imprint-memory] note: jionlp not installed (optional) — "
+              "natural-language time parsing falls back to regex. "
+              "Enable: pip install jionlp", file=sys.stderr)
+
+
 def main():
     """Entry point for console script and direct execution."""
+    _check_optional_deps()
     if is_http:
         _run_http()
     else:
