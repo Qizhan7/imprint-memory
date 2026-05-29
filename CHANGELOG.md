@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.11 — 2026-05-29
+
+Chunk summarization via any OpenAI-compatible API + per-session chunk boundaries.
+
+- **OpenAI-compatible summarizer.** Previously the summarizer only fell back
+  Cloudflare → Gemini → Ollama, so setups with none of those (e.g. Android,
+  where neither Gemini nor a local Ollama is practical) couldn't summarize
+  chunks at all — chunks never formed and search degraded to raw FTS. Added
+  `_call_openai` driving any OpenAI-compatible endpoint via `SUMMARY_API_BASE`
+  + `SUMMARY_API_KEY` + `SUMMARY_MODEL` (OpenAI, SiliconFlow, DeepSeek, Together,
+  vLLM, ...). Auto-fallback tries it first when a key is set; force it with
+  `IMPRINT_SUMMARY_PROVIDER=openai`.
+- **Per-session chunk boundaries.** `_split_into_chunks` now groups messages by
+  `session_id` before splitting, so id-adjacent messages from different
+  conversations/windows are never summarized into the same chunk (which
+  conflated unrelated threads and hurt recap quality).
+- Reminder: embeddings already support OpenAI-compatible endpoints via
+  `EMBED_PROVIDER=openai` + `EMBED_API_BASE` (e.g. SiliconFlow). Point both the
+  embed and the summary endpoints at one provider to fully automate chunking.
+
 ## 0.3.10 — 2026-05-29
 
 Strip `<think>` reasoning blocks from the FTS index and search results.

@@ -41,6 +41,14 @@ CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "")
 CF_MODEL = os.environ.get("CF_SUMMARY_MODEL", "@cf/meta/llama-3.3-70b-instruct-fp8-fast")
 
+# OpenAI-compatible summary API (OpenAI, SiliconFlow, DeepSeek, Together, vLLM, ...).
+# Set SUMMARY_API_BASE to the provider root; "/v1/chat/completions" is appended.
+# This is the path for setups where Gemini and Ollama aren't usable
+# (e.g. Android, where neither runs locally) — point it at SiliconFlow etc.
+SUMMARY_API_BASE = os.environ.get("SUMMARY_API_BASE", "https://api.openai.com")
+SUMMARY_API_KEY = os.environ.get("SUMMARY_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
+SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", "gpt-4o-mini")
+
 SUMMARIZE_PROMPT = f"""你在帮一个人整理记忆。读完这段对话后，用"跟朋友讲那天的事"的方式复述，并提取关键记忆片段。
 
 示例（输入是一段关于攀岩和睡前聊天的对话）：
@@ -166,15 +174,61 @@ def _call_ollama(prompt: str) -> str | None:
         return None
 
 
+def _call_openai(prompt: str) -> str | None:
+    """Call any OpenAI-compatible chat API (OpenAI, SiliconFlow, DeepSeek,
+    Together, local vLLM, ...). Configure with SUMMARY_API_BASE +
+    SUMMARY_API_KEY + SUMMARY_MODEL. This is the summarizer path for setups
+    where Gemini and Ollama aren't available (e.g. Android via SiliconFlow)."""
+    if not SUMMARY_API_KEY:
+        return None
+    url = f"{SUMMARY_API_BASE.rstrip('/')}/v1/chat/completions"
+    payload = json.dumps({
+        "model": SUMMARY_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 1500,
+        "temperature": 0.2,
+        "stream": False,
+    }).encode()
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {SUMMARY_API_KEY}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read())
+            return data["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"OpenAI-compatible summary call failed: {e}")
+        return None
+
+
 def _call_llm(prompt: str) -> str | None:
-    """Try CF llama-3.3-70b first (best quality for summaries), then Gemini, then Ollama."""
-    result = _call_cloudflare(prompt)
-    if result:
-        return result
-    result = _call_gemini(prompt)
-    if result:
-        return result
-    return _call_ollama(prompt)
+    """Summarizer chain. Force one with IMPRINT_SUMMARY_PROVIDER:
+    openai (any OpenAI-compatible endpoint via SUMMARY_API_BASE) | gemini |
+    cloudflare | ollama. Default auto-fallback tries the OpenAI-compatible
+    endpoint first (when SUMMARY_API_KEY is set), then CF, Gemini, Ollama."""
+    forced = os.environ.get("IMPRINT_SUMMARY_PROVIDER", "").strip().lower()
+    if forced:
+        fn = {
+            "openai": _call_openai,
+            "siliconflow": _call_openai,
+            "deepseek": _call_openai,
+            "gemini": _call_gemini,
+            "google": _call_gemini,
+            "cloudflare": _call_cloudflare,
+            "cf": _call_cloudflare,
+            "ollama": _call_ollama,
+        }.get(forced)
+        return fn(prompt) if fn else None
+    for fn in (_call_openai, _call_cloudflare, _call_gemini, _call_ollama):
+        result = fn(prompt)
+        if result:
+            return result
+    return None
 
 
 def _parse_structured_output(raw: str) -> dict:
@@ -422,7 +476,31 @@ def _time_gap_minutes(t1: str, t2: str) -> float:
 
 
 def _split_into_chunks(messages: list[dict]) -> list[list[dict]]:
-    """Split messages using similarity + time gap + max size."""
+    """Group messages by session_id first, then split each conversation on its
+    own. Messages from different conversations are never mixed into one chunk —
+    id-adjacent rows from another window/session would otherwise be summarized
+    together and conflate unrelated threads. Session order follows first
+    appearance; within a session, original (id) order is preserved."""
+    if not messages:
+        return []
+
+    by_session: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for m in messages:
+        sid = m.get("session_id") or ""
+        if sid not in by_session:
+            by_session[sid] = []
+            order.append(sid)
+        by_session[sid].append(m)
+
+    chunks: list[list[dict]] = []
+    for sid in order:
+        chunks.extend(_split_session_chunks(by_session[sid]))
+    return chunks
+
+
+def _split_session_chunks(messages: list[dict]) -> list[list[dict]]:
+    """Split a single conversation's messages by similarity + time gap + size."""
     if not messages:
         return []
 
