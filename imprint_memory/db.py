@@ -71,6 +71,27 @@ def segment_cjk(text: str) -> str:
     return re.sub(r'\s+', ' ', _CJK_RE.sub(r' \1 ', text)).strip()
 
 
+# Assistant replies synced from chat platforms (e.g. the claude.ai browser
+# extension) can carry their hidden reasoning inline as <think>...</think>
+# blocks, prepended *before* the visible reply. Left in place they swamp the
+# FTS index: the thinking monologue (often several times longer than the reply)
+# dominates term frequency, so keyword search recalls messages that only mention
+# a word inside their thinking and buries the real reply text. We keep the full
+# content (incl. think) in conversation_log for archival, and strip it only at
+# the index/display layer. Registered as a SQLite function so the FTS sync
+# triggers can call segment_cjk(strip_think(content)).
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def strip_think(text: str) -> str:
+    """Drop <think>...</think> blocks. Safe on messages without any (returns
+    them unchanged) — user turns never carry think blocks, so this is applied
+    unconditionally regardless of direction."""
+    if not text:
+        return text or ""
+    return _THINK_RE.sub("", text).strip()
+
+
 def _get_db() -> sqlite3.Connection:
     """Get database connection, auto-create tables."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -79,6 +100,7 @@ def _get_db() -> sqlite3.Connection:
     db.execute("PRAGMA busy_timeout=5000")
     db.row_factory = sqlite3.Row
     db.create_function("segment_cjk", 1, segment_cjk)
+    db.create_function("strip_think", 1, strip_think)
     _init_tables(db)
     return db
 
@@ -328,17 +350,17 @@ def _init_tables(db: sqlite3.Connection):
 
         CREATE TRIGGER IF NOT EXISTS convlog_ai AFTER INSERT ON conversation_log BEGIN
             INSERT INTO conversation_log_fts(rowid, content, platform, speaker)
-            VALUES (new.id, segment_cjk(new.content), new.platform, new.speaker);
+            VALUES (new.id, segment_cjk(strip_think(new.content)), new.platform, new.speaker);
         END;
         CREATE TRIGGER IF NOT EXISTS convlog_ad AFTER DELETE ON conversation_log BEGIN
             INSERT INTO conversation_log_fts(conversation_log_fts, rowid, content, platform, speaker)
-            VALUES ('delete', old.id, segment_cjk(old.content), old.platform, old.speaker);
+            VALUES ('delete', old.id, segment_cjk(strip_think(old.content)), old.platform, old.speaker);
         END;
         CREATE TRIGGER IF NOT EXISTS convlog_au AFTER UPDATE ON conversation_log BEGIN
             INSERT INTO conversation_log_fts(conversation_log_fts, rowid, content, platform, speaker)
-            VALUES ('delete', old.id, segment_cjk(old.content), old.platform, old.speaker);
+            VALUES ('delete', old.id, segment_cjk(strip_think(old.content)), old.platform, old.speaker);
             INSERT INTO conversation_log_fts(rowid, content, platform, speaker)
-            VALUES (new.id, segment_cjk(new.content), new.platform, new.speaker);
+            VALUES (new.id, segment_cjk(strip_think(new.content)), new.platform, new.speaker);
         END;
     """)
     db.commit()

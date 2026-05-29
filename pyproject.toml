@@ -1,6 +1,6 @@
 [project]
 name = "imprint-memory"
-version = "0.3.9"
+version = "0.3.10"
 description = "Automatic memory layer for any LLM agent — captures every conversation turn, multimodal embed (text+image), hybrid search (vec + FTS5 + RRF), auto-surfacing recall hook. MCP server (stdio + HTTP)."
 readme = "README.md"
 license = "MIT"
@@ -54,6 +54,7 @@ Issues = "https://github.com/Qizhan7/imprint-memory/issues"
 imprint-memory = "imprint_memory.server:main"
 imprint-console = "imprint_memory.console:main"
 imprint-memory-receiver = "imprint_memory.chat_sync_receiver:main"
+imprint-rebuild-fts = "imprint_memory.rebuild_fts:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.10 — 2026-05-29
+
+Strip `<think>` reasoning blocks from the FTS index and search results.
+
+- Assistant replies imported from chat platforms (e.g. the claude.ai browser
+  extension) can carry hidden reasoning inline as `<think>...</think>`,
+  prepended before the visible reply. The `conversation_log_fts` index ingested
+  the whole field, so keyword search recalled messages that merely mentioned a
+  term *inside* their thinking and buried the real replies — and results
+  displayed the reasoning monologue instead of the reply. (`conversation_search`
+  was affected; the vector path already stripped think.)
+- `db.strip_think()` added and registered as a SQLite function; the
+  `conversation_log_fts` sync triggers now index `segment_cjk(strip_think(...))`,
+  so thinking never enters the keyword index. The full content (incl. think) is
+  still kept in `conversation_log` for archival.
+- `search_conversations` and `format_search_results` strip `<think>` from the
+  returned/displayed text.
+- Rows ingested before this fix stay polluted. After upgrading, run
+  **`imprint-rebuild-fts`** once (re-indexes `conversation_log_fts`; never
+  touches `conversation_log`, safe to re-run), then restart your memory server.
+
 ## 0.3.8 — 2026-05-24
 
 Two-step search guidance + chunker keeps external system names.

@@ -7,7 +7,7 @@ import re
 import struct
 from pathlib import Path
 
-from .db import _get_db, now_str, LOCAL_TZ, segment_cjk, sanitize_fts_query, DATA_DIR
+from .db import _get_db, now_str, LOCAL_TZ, segment_cjk, sanitize_fts_query, DATA_DIR, strip_think
 from datetime import datetime
 
 
@@ -282,7 +282,16 @@ def search_conversations(
                    ORDER BY c.id DESC LIMIT ?""",
                 (safe_query, limit),
             ).fetchall()
-        return [dict(r) for r in rows]
+        # Strip <think> from the returned text. The FTS index already excludes
+        # it (see db.py triggers), but the stored content still carries it, and
+        # callers display c.content directly — without this they'd see the
+        # reasoning monologue instead of the actual reply.
+        results = []
+        for r in rows:
+            item = dict(r)
+            item["content"] = strip_think(item["content"])
+            results.append(item)
+        return results
     except Exception:
         return []
     finally:
@@ -364,7 +373,7 @@ def format_search_results(results: list[dict]) -> str:
         p = r["platform"]
         d = "←" if r["direction"] == "in" else "→"
         ts = r["created_at"]
-        content = r["content"]
+        content = strip_think(r["content"])
         if len(content) > 200:
             content = content[:200] + "..."
         lines.append(f"[{ts}] {p}{d} {content}")
