@@ -42,6 +42,7 @@ from starlette.routing import Route
 # no visible error.
 _KEY_FILES = [
     os.path.join(os.getcwd(), ".env"),
+    os.path.expanduser("~/.imprint/.env"),
     os.path.expanduser("~/.imprint/keys.env"),
     os.path.expanduser("~/.config/imprint/keys.env"),
 ]
@@ -407,6 +408,14 @@ def main():
         help="Skip the startup backfill pass over unembedded messages",
     )
     args = parser.parse_args()
+
+    try:
+        from .memory_manager import check_vector_dimensions
+        _dim_warn = check_vector_dimensions()
+        if _dim_warn:
+            print(_dim_warn, file=sys.stderr, flush=True)
+    except Exception:
+        pass
 
     try:
         import uvicorn

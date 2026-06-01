@@ -420,10 +420,18 @@ def _run_http():
         async def dispatch(self, request, call_next):
             if request.url.path in ("/oauth/token", "/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource", "/oauth/authorize"):
                 return await call_next(request)
-            if not ACCESS_TOKEN:
-                return await call_next(request)
             client = request.client
-            if client and client.host in ("127.0.0.1", "::1", "localhost"):
+            is_local = bool(client and client.host in ("127.0.0.1", "::1", "localhost"))
+            # No token configured: allow localhost only, refuse remote — a default
+            # `--http` bind on 0.0.0.0 must not expose private memory to the LAN.
+            if not ACCESS_TOKEN:
+                if is_local:
+                    return await call_next(request)
+                return JSONResponse(
+                    {"error": "unauthorized: set OAUTH_ACCESS_TOKEN to allow non-local access"},
+                    status_code=401,
+                )
+            if is_local:
                 return await call_next(request)
             auth = request.headers.get("authorization", "")
             if auth == f"Bearer {ACCESS_TOKEN}":
@@ -562,6 +570,13 @@ def _check_optional_deps() -> None:
 def main():
     """Entry point for console script and direct execution."""
     _check_optional_deps()
+    try:
+        from .memory_manager import check_vector_dimensions
+        _dim_warn = check_vector_dimensions()
+        if _dim_warn:
+            print(_dim_warn, file=sys.stderr)
+    except Exception:
+        pass
     if is_http:
         _run_http()
     else:

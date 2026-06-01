@@ -6,7 +6,7 @@
 
 Give Claude a memory that lasts. Everything you tell it stays — searchable across conversations, private, on your machine.
 
-No cloud storage. No API key required. Works offline.
+Your memory lives in a local database — not the cloud. Default embeddings use a free Google key; go fully local and offline with Ollama.
 
 ```
 You: "Remember I'm allergic to shellfish"
@@ -17,9 +17,11 @@ Claude: (recalls your allergy before suggesting a recipe)
 
 ## What it does
 
-- **Captures every turn automatically** — every message you send or
-  receive lands in a searchable log, gets segmented into events, and
-  gets multimodal-embedded (text + image). The LLM never needs to
+- **Captures every turn automatically** — each surface feeds the same
+  store through its own entry point: a `Stop` hook for Claude Code, the
+  Chrome sync extension for claude.ai, channel adapters for Telegram and
+  the like. Every message lands in a searchable log, gets segmented into
+  events, and multimodal-embedded (text + image). The LLM never needs to
   "decide to remember" — it's already stored.
 - **Hybrid search out of the box** — keyword (FTS5/BM25) + semantic
   (vector) + RRF rank fusion across memory / bank / chunk pools.
@@ -92,7 +94,7 @@ flowchart TB
 
 | What | How |
 |---|---|
-| Every message stored verbatim | Channel adapters call `log_message()` on every in/out turn — Claude Code hook, claude.ai sync, Telegram bot, custom apps. No "decide to save" step. |
+| Every message stored verbatim | A Claude Code `Stop` hook + claude.ai sync + channel adapters call `log_message()` on every in/out turn. No "decide to save" step. |
 | Multimodal embed of images | When a message carries an upload header (e.g. `路径=/abs/path.jpg`), `_maybe_embed_image` runs inline and writes a combined text+image vector |
 | Segment conversations into "events" | `incremental_chunk_update` runs on a schedule, groups consecutive messages into chunks, generates a one-paragraph LLM summary + keywords per chunk |
 | Top-K similarity graph between events | After each chunk batch, similarity edges are built so related events surface together in graph-mode retrieval |
@@ -164,6 +166,25 @@ imprint-memory-receiver
 
 Then install the [imprint-chat-sync](https://github.com/Qizhan7/imprint-chat-sync) Chrome extension to capture your web chats.
 
+### Auto-capture hook — Claude Code (recommended)
+
+This is what makes capture automatic for Claude Code. A `Stop` hook logs every
+turn to your memory store. Add to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "imprint-memory-capture" }] }
+    ]
+  }
+}
+```
+
+`imprint-memory-capture` reads the just-finished turn's transcript and writes
+each message to `conversation_log`. Without it the Claude Code channel won't
+auto-capture (claude.ai sync and other channel adapters have their own paths).
+
 ### Auto-surfacing hook (optional)
 
 Makes Claude automatically recall relevant memories when you ask something:
@@ -223,8 +244,8 @@ enable, no surprise charges.
 | Embedding (alternative 1) | — | `bge-m3` (1024 dim, **text only, no image**) | Local Ollama | $0, local | `brew install ollama && ollama pull bge-m3 && ollama serve` |
 | Embedding (alternative 2) | — | `text-embedding-3-small` (1536 dim, text only) | OpenAI | Paid, no free tier | Buy API credits, `export OPENAI_API_KEY=...` |
 | **Chunk-summary LLM** (chunker's LLM) | Optional but recommended | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | Cloudflare Workers AI | Free tier (10k neurons/day) | Sign up free at [dash.cloudflare.com/sign-up](https://dash.cloudflare.com/sign-up) (no card). Workers AI free tier is on by default. Account ID is in the dashboard URL. Create a token at [/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens) → "Create Token" → "Workers AI" template. `export CF_ACCOUNT_ID=... CF_API_TOKEN=...` |
-| Chunk-summary LLM (alternative 1) | — | `gemini-1.5-flash` or `gemini-2.0-flash` | Google AI Studio | Free tier (~15 req/min) | Same `GOOGLE_API_KEY` as embedding. Set `CF_SUMMARY_MODEL` to the Gemini model name |
-| Chunk-summary LLM (alternative 2) | — | Any Ollama model | Local Ollama | $0, local | Slower / lower quality summaries; set `CF_SUMMARY_MODEL` accordingly |
+| Chunk-summary LLM (alternative 1) | — | `gemini-1.5-flash` or `gemini-2.0-flash` | Google AI Studio | Free tier (~15 req/min) | Same `GOOGLE_API_KEY` as embedding. Set `GEMINI_SUMMARY_MODEL` to the Gemini model name |
+| Chunk-summary LLM (alternative 2) | — | Any Ollama model | Local Ollama | $0, local | Slower / lower quality summaries; set `OLLAMA_CHAT_MODEL` accordingly |
 | **Context compression** (`compress.py`) | Optional, separate script | `qwen3:8b` | Local Ollama | $0, local | Only if you actually use the `compress.py` CLI. `brew install ollama && ollama pull qwen3:8b` |
 
 **Bottom line**: the *only* thing strictly required to get up and running
@@ -250,8 +271,10 @@ boundary and search silently goes half-blind — FTS still works, but
 the semantic channel is dead for everything written before the switch.
 
 **Pick once, before the first write.** If you absolutely must switch:
-drop `conversation_vectors` and `memory_vectors`, then re-embed
-everything with `imprint-memory-reindex`.
+run `imprint-memory-reindex` to rebuild curated memory + bank vectors, then
+`DELETE FROM conversation_vectors;` on the DB and let the receiver's backfill
+re-embed conversations incrementally (a full cloud re-embed can exceed
+free-tier quotas).
 
 ## MCP Tools (27 total)
 
@@ -425,7 +448,7 @@ Built on top of these open-source libraries:
 
 让 Claude 记住你说过的话。下次聊天还在，搜得到，全部存在本地。
 
-不上传云端。不需要 API key。离线也能用。
+记忆存在本地数据库——不在云端。默认 embedding 用一把免费 Google key；想完全本地 + 离线就切到 Ollama。
 
 ```
 你: "记住我对虾过敏"
@@ -436,9 +459,11 @@ Claude: (推荐菜谱前自动回忆起你的过敏)
 
 ## 能做什么
 
-- **每个对话 turn 自动捕获** — 你发的、AI 回的每条消息都自动写入
-  可搜索的日志、自动切成事件、自动做多模态 embedding（文字 + 图片）。
-  LLM **不需要"决定要不要记住"**，写进 DB 是默认发生的。
+- **每个对话 turn 自动捕获** — 每个渠道用各自的入口喂进同一个库：
+  Claude Code 走 `Stop` hook，claude.ai 走 Chrome 同步扩展，Telegram
+  等走 channel adapter。每条消息都自动写入可搜索的日志、切成事件、做
+  多模态 embedding（文字 + 图片）。LLM **不需要"决定要不要记住"**，
+  写进 DB 是默认发生的。
 - **混合搜索开箱即用** — 关键词（FTS5/BM25）+ 语义（向量）+ RRF
   rank 融合，覆盖 memory / bank / chunk 三池。问"上周那个项目是
   什么来着"也能找到。
@@ -506,7 +531,7 @@ flowchart TB
 
 | 能力 | 怎么做到 |
 |---|---|
-| 每条消息原文入库 | Channel adapter 在每个 in/out turn 都调 `log_message()` — Claude Code hook、claude.ai 同步、Telegram bot、自定义 app。**没有"要不要存"那一步**。 |
+| 每条消息原文入库 | Claude Code `Stop` hook + claude.ai 同步 + channel adapter 在每个 in/out turn 都调 `log_message()`。**没有"要不要存"那一步**。 |
 | 图片多模态嵌入 | 消息带上传 header（如 `路径=/abs/path.jpg`）时，`_maybe_embed_image` 立即跑，写入 text+image 联合向量 |
 | 对话切分成"事件" | `incremental_chunk_update` 定时跑，把连续消息切成 chunk，用 LLM 生成一段摘要 + keywords |
 | 事件之间的 Top-K 相似度图谱 | 每批 chunk 切完后自动建相似度边，graph 检索时让相关事件链到一起 |
@@ -575,6 +600,25 @@ imprint-memory-receiver
 
 然后装 [imprint-chat-sync](https://github.com/Qizhan7/imprint-chat-sync) Chrome 扩展，把网页端对话也收进来。
 
+### 自动捕获 hook — Claude Code（推荐）
+
+这就是让 Claude Code 自动捕获的关键。一个 `Stop` hook 把每个 turn 写进
+记忆库。加到 `~/.claude/settings.json`：
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "imprint-memory-capture" }] }
+    ]
+  }
+}
+```
+
+`imprint-memory-capture` 读刚结束那一轮的 transcript，把每条消息写进
+`conversation_log`。不装它，Claude Code 渠道就不会自动捕获（claude.ai
+同步和其它 channel adapter 有各自的捕获路径）。
+
 ### 自动浮现 hook（可选）
 
 让 Claude 在你提问时自动想起相关的记忆：
@@ -631,8 +675,8 @@ billing、不会冒出账单。
 | 嵌入（替代项 1） | — | `bge-m3`（1024 维，**只支持文字、不支持图片**） | 本地 Ollama | $0，本地 | `brew install ollama && ollama pull bge-m3 && ollama serve` |
 | 嵌入（替代项 2） | — | `text-embedding-3-small`（1536 维，只支持文字） | OpenAI | 付费，无免费档 | 充值 API 余额，`export OPENAI_API_KEY=...` |
 | **Chunk 摘要 LLM** | 可选但推荐 | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | Cloudflare Workers AI | 免费档（10k neurons/天） | 免费注册 [dash.cloudflare.com/sign-up](https://dash.cloudflare.com/sign-up)（**不要卡**）。Workers AI 默认免费档开着。Account ID 在 dashboard 网址里能看到。在 [/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens) → "Create Token" → 选 "Workers AI" 模板创建 token。`export CF_ACCOUNT_ID=... CF_API_TOKEN=...` |
-| Chunk 摘要 LLM（替代项 1） | — | `gemini-1.5-flash` / `gemini-2.0-flash` | Google AI Studio | 免费档（约 15 req/分钟） | 复用嵌入那把 `GOOGLE_API_KEY`，设 `CF_SUMMARY_MODEL` 为 Gemini 模型名 |
-| Chunk 摘要 LLM（替代项 2） | — | 任意 Ollama 模型 | 本地 Ollama | $0，本地 | 摘要质量稍低、速度稍慢；设对应 `CF_SUMMARY_MODEL` |
+| Chunk 摘要 LLM（替代项 1） | — | `gemini-1.5-flash` / `gemini-2.0-flash` | Google AI Studio | 免费档（约 15 req/分钟） | 复用嵌入那把 `GOOGLE_API_KEY`，设 `GEMINI_SUMMARY_MODEL` 为 Gemini 模型名 |
+| Chunk 摘要 LLM（替代项 2） | — | 任意 Ollama 模型 | 本地 Ollama | $0，本地 | 摘要质量稍低、速度稍慢；设对应 `OLLAMA_CHAT_MODEL` |
 | **上下文压缩**（`compress.py` 用） | 可选，单独脚本 | `qwen3:8b` | 本地 Ollama | $0，本地 | 仅当你用 `compress.py` CLI 时才装。`brew install ollama && ollama pull qwen3:8b` |
 
 **底线**：开起来**绝对必需的**只有**一个**嵌入服务。如果你用了
@@ -654,8 +698,10 @@ Google 做嵌入，chunk 摘要可以直接复用同一把 `GOOGLE_API_KEY`。�
 跨边界的 cosine sim 一律返回 0，搜索悄悄变瞎子——FTS 还能用，但
 语义通道对切换之前写入的所有数据都失效了。
 
-**写第一条之前就选好**。如果非得切：清掉 `conversation_vectors`
-和 `memory_vectors`，用 `imprint-memory-reindex` 全部重做。
+**写第一条之前就选好**。如果非得切：先跑 `imprint-memory-reindex`
+重建 curated memory + bank 向量，再对 DB 执行 `DELETE FROM
+conversation_vectors;`，让 receiver 的 backfill 渐进重嵌对话（云端全量
+重嵌可能超免费档）。
 
 ## MCP 工具（共 27 个）
 

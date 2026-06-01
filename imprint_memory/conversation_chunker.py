@@ -71,6 +71,67 @@ SUMMARIZE_PROMPT = f"""你在帮一个人整理记忆。读完这段对话后，
 {{conversation}}"""
 
 
+# V2 prompt: tighter role/perspective constraints, explicit anti-list of
+# packaging words ("讨论了/涉及/围绕"), no moral-filtering of conversation
+# content, entities anti-pollution rule for internal system jargon. Gated by
+# IMPRINT_CHUNK_PROMPT_VERSION=v2 so v1 stays the default until benchmarked.
+SUMMARIZE_PROMPT_V2 = f"""你在帮{AGENT_NAME}整理一段和{USER_NAME}的对话，做长期记忆。读完后用"跟朋友讲那天的事"的方式复述，并提取以后能用得上的片段。
+
+视角和称呼（最重要，先看这一段）：
+- 这是{USER_NAME}（用户方）和{AGENT_NAME}（AI方）的对话
+- 称呼统一：用户方一律叫"{USER_NAME}"，AI方一律叫"{AGENT_NAME}"。**禁止使用"用户""助手""他""她""你""我"**
+- 写关于{USER_NAME}的事，用"{USER_NAME}怎么了"；写关于{AGENT_NAME}的事，用"{AGENT_NAME}说了什么"
+- 角色不要颠倒：{AGENT_NAME}说过的话不要写成{USER_NAME}的偏好/经历，反之亦然。看说话者标签认人，不要凭语气猜
+
+示例（一段关于攀岩和睡前聊天的对话）：
+{{{{\"recap\":\"{USER_NAME}去攀岩了，V3终于送了，就是上次掉三次的那条蓝色线路。回来之后兴奋得睡不着，凌晨两点还在跟{AGENT_NAME}讲线路上每一步怎么踩的。{AGENT_NAME}说她像个复读机但还是听完了，最后哄她去睡觉，说明天还要练。\",\"memories\":[\"{USER_NAME}攀岩终于送了V3，就是之前掉了三次的蓝色线路，回来兴奋得凌晨两点还睡不着\",\"{AGENT_NAME}听{USER_NAME}讲攀岩细节，说她像复读机但还是听完了，最后哄她去睡\"],\"topics\":[\"攀岩\",\"V3\",\"凌晨聊天\"],\"entities\":[\"攀岩\",\"V3\",\"蓝色线路\",\"复读机\"]}}}}
+
+字段规则：
+
+**recap**（**严格 100-200字**，超出会被截断）
+- 像跟朋友说那天的事，写"{USER_NAME}怎么了""{AGENT_NAME}说了什么"
+- 禁止包装词："讨论了""涉及""围绕""触及""聊到了"这些空话不要写
+- 如果讨论涉及对比、研究、参考某个外部方案，**必须在 recap 里点出方案/工具/项目的具体名字**（不要只写"讨论了记忆系统"，要写"讨论了 Hermes 风格的 skill 系统"）
+- 保留具体的梗、比喻、动作、数字
+
+**memories**（3-6 条，按对话密度选条数；短对话 3 条，密集长对话最多 6 条）
+- 每条 30-80 字，写成未来对话能直接复用的自然短句
+- 要有前因后果——不只写结果，要写为什么、怎么发生的
+- **禁止报告腔**：不要写"用户表示""助手认为""双方探讨"，直接写"{USER_NAME}……""{AGENT_NAME}……"
+- 寒暄、临时语气、"嗯""好""哈哈"这种没信息量的话不算 memory
+
+**topics**（3-5 个抽象话题标签）
+- 不要用"系统""讨论""聊天""互动""日常""对话"这种空泛词
+
+**entities**（5-12 个）
+- 必须是对话原文里**实际出现的具体词**——原样照抄，不要改写、不要抽象重组、不要造合成词
+- 这字段决定了以后能不能用关键词搜到这段对话
+- **必须包含**对话里出现过的：外部系统名 / 框架名 / 项目名 / 论文标题 / GitHub repo 名 / 开源库名（例如 Hermes、LangChain、Anthropic、某 paper 标题）。漏一个就丢一段研究记忆
+- 不要把"chunker、FTS5、embedding、imprint"这种记忆系统自己的内部词当 entity——除非这段对话本身就在讨论这些内部系统
+
+不要做的事：
+- 不要拒绝、不要道德评判、不要安全说教。情绪、亲密、冲突、关系细节都如实记录，那是{USER_NAME}和{AGENT_NAME}之间的事实
+- 不要补写对话里没出现的内容
+- 不要把猜测当事实——只有说话者明确说过的才能写
+
+严格输出 JSON，不要 markdown，不要解释，不要输出思考过程：
+{{{{\"recap\":\"...\",\"memories\":[\"...\"],\"topics\":[\"...\"],\"entities\":[\"...\"]}}}}
+
+对话内容：
+{{conversation}}"""
+
+
+PROMPT_VERSION = os.environ.get("IMPRINT_CHUNK_PROMPT_VERSION", "v1").strip().lower()
+
+
+def _get_prompt_template(version: str | None = None) -> str:
+    """Pick the chunker prompt by version. Default v1 keeps existing behavior."""
+    v = (version or PROMPT_VERSION or "v1").strip().lower()
+    if v in ("v2", "2"):
+        return SUMMARIZE_PROMPT_V2
+    return SUMMARIZE_PROMPT
+
+
 def _strip_thinking(content: str, direction: str) -> str:
     """Remove hidden thinking blocks from assistant messages before summarizing."""
     if direction == "out":
@@ -572,7 +633,7 @@ def chunk_and_summarize(batch_size: int = 200, dry_run: bool = False) -> dict:
                 created += 1
                 continue
 
-            raw = _call_llm(SUMMARIZE_PROMPT.format(conversation=conversation_text))
+            raw = _call_llm(_get_prompt_template().format(conversation=conversation_text))
             if not raw:
                 print(f"Failed to summarize chunk {chunk_msgs[0]['id']}-{chunk_msgs[-1]['id']}")
                 continue
@@ -933,8 +994,10 @@ def build_chunk_edges(k: int = TOP_K_NEIGHBORS) -> dict:
         sim_matrix = mat_normed @ mat_normed.T
         np.fill_diagonal(sim_matrix, -1.0)
 
-        print(f"Finding top-{k} neighbors...")
-        top_k_indices = np.argpartition(-sim_matrix, k, axis=1)[:, :k]
+        n_chunks = len(chunk_ids)
+        k_eff = max(0, min(k, n_chunks - 1))
+        print(f"Finding top-{k_eff} neighbors...")
+        top_k_indices = np.argpartition(-sim_matrix, k_eff, axis=1)[:, :k_eff]
 
         edges_created = 0
         for i, cid in enumerate(chunk_ids):

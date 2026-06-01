@@ -401,29 +401,61 @@ def _embed_cloudflare(text: str) -> Optional[list[float]]:
     return None
 
 
+_embed_warn_state = {"count": 0, "last": 0.0}
+
+
+def _warn_embed_failure(provider: str) -> None:
+    """Surface a throttled, explicit warning when the configured embedder yields
+    no vector. We refuse to silently fall back to another provider — mixing
+    vector dimensions across one store corrupts cosine search — so make the
+    degradation loud and let the user decide (fix the provider, or switch)."""
+    import sys
+    import time as _time
+
+    _embed_warn_state["count"] += 1
+    now = _time.monotonic()
+    # First failure is always loud; after that, at most once every 5 minutes.
+    if _embed_warn_state["count"] == 1 or now - _embed_warn_state["last"] > 300:
+        _embed_warn_state["last"] = now
+        print(
+            f"⚠️  imprint-memory: embedding provider '{provider}' (model "
+            f"'{EMBED_MODEL}') returned no vector. This turn degrades to "
+            f"keyword-only (FTS5) search — semantic recall is impaired until the "
+            f"provider works again. Check its key / quota / server, or set "
+            f"EMBED_PROVIDER to another backend. imprint-memory does NOT auto-embed "
+            f"with a different provider: mixing vector dimensions corrupts the store.",
+            file=sys.stderr,
+        )
+
+
 def _embed(text: str, image_path: Optional[str] = None) -> Optional[list[float]]:
-    """Generate an embedding vector, falling back to Ollama and then keyword-only search.
+    """Generate an embedding with the CONFIGURED provider only.
 
-    Returns None when every provider is unavailable; callers keep working via
-    FTS5/LIKE retrieval. image_path is only supported by the Google provider.
+    No cross-provider fallback. Switching providers mid-store mixes vector
+    dimensions and silently breaks cosine search, so a failure surfaces a
+    throttled warning and returns None (callers degrade to FTS5/LIKE) rather
+    than quietly embedding with a different backend. image_path is Google-only.
     """
-    providers = [EMBED_PROVIDER]
-    if EMBED_PROVIDER != "ollama":
-        providers.append("ollama")
+    if EMBED_PROVIDER == "google":
+        vec = _embed_google(text, image_path=image_path)
+    elif EMBED_PROVIDER == "openai":
+        vec = _embed_openai(text)
+    elif EMBED_PROVIDER == "cloudflare":
+        vec = _embed_cloudflare(text)
+    elif EMBED_PROVIDER == "ollama":
+        vec = _embed_ollama(text)
+    else:
+        import sys
+        print(
+            f"⚠️  imprint-memory: unknown EMBED_PROVIDER '{EMBED_PROVIDER}'. "
+            f"Use one of: google, openai, cloudflare, ollama.",
+            file=sys.stderr,
+        )
+        return None
 
-    for provider in providers:
-        if provider == "google":
-            vec = _embed_google(text, image_path=image_path)
-        elif provider == "openai":
-            vec = _embed_openai(text)
-        elif provider == "cloudflare":
-            vec = _embed_cloudflare(text)
-        elif provider == "ollama":
-            vec = _embed_ollama(text)
-        else:
-            vec = None
-        if vec:
-            return vec
+    if vec:
+        return vec
+    _warn_embed_failure(EMBED_PROVIDER)
     return None
 
 
@@ -900,6 +932,52 @@ def reindex_embeddings() -> str:
         f"bank chunks: {bank_ok}/{bank_total}. "
         f"Provider: {EMBED_PROVIDER}, model: {EMBED_MODEL}"
     )
+
+
+def _reindex_cli() -> None:
+    """Console entry: `imprint-memory-reindex`. Rebuilds curated memory + bank
+    embeddings with the current provider/model. Conversation vectors are left to
+    the receiver's incremental backfill — a full cloud re-embed can blow free-tier
+    quotas — so a provider switch also needs a manual conversation_vectors drop."""
+    print(reindex_embeddings())
+    print(
+        "conversation_vectors not rebuilt here. After switching providers, run "
+        "'DELETE FROM conversation_vectors;' on your DB and let the receiver "
+        "backfill (or a local re-embed) repopulate them incrementally."
+    )
+
+
+def check_vector_dimensions() -> Optional[str]:
+    """Detect a mixed-dimension vector store — the tell-tale sign that
+    EMBED_PROVIDER was switched mid-store, which silently breaks cosine search
+    across the boundary. Returns a warning string, or None when consistent."""
+    db = _get_db()
+    try:
+        problems = []
+        for table in ("conversation_vectors", "memory_vectors"):
+            try:
+                rows = db.execute(
+                    f"SELECT DISTINCT length(embedding) AS n FROM {table} "
+                    "WHERE embedding IS NOT NULL"
+                ).fetchall()
+            except Exception:
+                continue  # table not created yet
+            dims = sorted({r["n"] // 4 for r in rows if r["n"]})
+            if len(dims) > 1:
+                problems.append(f"{table} has dims {dims}")
+        if not problems:
+            return None
+        return (
+            "⚠️  imprint-memory: vector store has MIXED embedding dimensions ("
+            + "; ".join(problems)
+            + "). EMBED_PROVIDER was almost certainly switched mid-store — cosine "
+            "similarity returns 0 across the dimension boundary, so semantic search "
+            "is silently half-blind. Settle on one provider, then rebuild: run "
+            "imprint-memory-reindex, and DELETE FROM conversation_vectors so the "
+            "backfill re-embeds everything at a single dimension."
+        )
+    finally:
+        db.close()
 
 
 def find_stale(days: int = 14) -> list[dict]:

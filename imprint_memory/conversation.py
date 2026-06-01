@@ -3,6 +3,7 @@ Conversation log — Layer 3 of the memory architecture.
 Stores full conversation history from all platforms with FTS5 search.
 """
 
+import os
 import re
 import struct
 from pathlib import Path
@@ -368,13 +369,20 @@ def format_search_results(results: list[dict]) -> str:
     """Format search results for MCP tool output."""
     if not results:
         return "没有找到相关对话记录"
+    user_name = os.environ.get("IMPRINT_USER_NAME", "User")
+    agent_name = os.environ.get("IMPRINT_AGENT_NAME", "Assistant")
     lines = []
     for r in results:
         p = r["platform"]
-        d = "←" if r["direction"] == "in" else "→"
         ts = r["created_at"]
         content = strip_think(r["content"])
         if len(content) > 200:
             content = content[:200] + "..."
-        lines.append(f"[{ts}] {p}{d} {content}")
+        # Who said it: stored speaker > direction→configured name > arrow fallback.
+        who = (r.get("speaker") or "").strip() or (user_name if r["direction"] == "in" else agent_name)
+        if who:
+            lines.append(f"[{ts} {p}] {who}: {content}")
+        else:
+            d = "←" if r["direction"] == "in" else "→"
+            lines.append(f"[{ts}] {p}{d} {content}")
     return "\n".join(lines)

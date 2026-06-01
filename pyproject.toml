@@ -1,16 +1,15 @@
 [project]
 name = "imprint-memory"
-version = "0.3.11"
+version = "0.4.0"
 description = "Automatic memory layer for any LLM agent — captures every conversation turn, multimodal embed (text+image), hybrid search (vec + FTS5 + RRF), auto-surfacing recall hook. MCP server (stdio + HTTP)."
 readme = "README.md"
-license = "MIT"
+license = "AGPL-3.0-or-later"
 requires-python = ">=3.10"
 authors = [{ name = "Qizhan7" }]
 keywords = ["claude", "mcp", "memory", "ai", "agent"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -54,6 +53,8 @@ Issues = "https://github.com/Qizhan7/imprint-memory/issues"
 imprint-memory = "imprint_memory.server:main"
 imprint-console = "imprint_memory.console:main"
 imprint-memory-receiver = "imprint_memory.chat_sync_receiver:main"
+imprint-memory-capture = "imprint_memory.cc_capture:main"
+imprint-memory-reindex = "imprint_memory.memory_manager:_reindex_cli"
 imprint-rebuild-fts = "imprint_memory.rebuild_fts:main"
 
 [build-system]
