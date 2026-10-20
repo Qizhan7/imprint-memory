@@ -51,7 +51,10 @@ def _arg_value(flag: str, default: str) -> str:
 
 
 is_http = "--http" in sys.argv
-HTTP_HOST = os.environ.get("IMPRINT_HTTP_HOST", _arg_value("--host", "0.0.0.0" if is_http else "127.0.0.1"))
+# Default to loopback even in HTTP mode: a tunnel (cloudflared, frp, ssh -R)
+# connects to localhost anyway. Set IMPRINT_HTTP_HOST=0.0.0.0 only if you
+# really need LAN/Docker access — the bearer token is required either way.
+HTTP_HOST = os.environ.get("IMPRINT_HTTP_HOST", _arg_value("--host", "127.0.0.1"))
 HTTP_PORT = int(os.environ.get("IMPRINT_HTTP_PORT", _arg_value("--port", "8000")))
 
 mcp = FastMCP(
@@ -412,31 +415,58 @@ def _run_http():
         CLIENT_SECRET = _os.environ.get("OAUTH_CLIENT_SECRET", "")
         ACCESS_TOKEN = _os.environ.get("OAUTH_ACCESS_TOKEN", "")
 
+    import hmac as _hmac
     import secrets as _secrets
     import time as _time
     _pending_auth_codes: dict = {}
+
+    # Never trust "the request came from 127.0.0.1". Every tunnel connects from
+    # localhost: cloudflared happens to forward the real client IP, but plain
+    # TCP forwarders (frp, ssh -R, socat, ...) don't, so a localhost bypass
+    # turns into "anyone on the internet skips the token".
+    NO_AUTH = os.environ.get("IMPRINT_HTTP_NO_AUTH", "") == "1"
+    if not ACCESS_TOKEN and not NO_AUTH:
+        print(
+            "imprint-memory: refusing to start HTTP mode without an access token.\n"
+            f"  Run scripts/generate_oauth.py (writes {CRED_FILE}),\n"
+            "  or set OAUTH_ACCESS_TOKEN (+ OAUTH_CLIENT_ID / OAUTH_CLIENT_SECRET for the Claude.ai connector).\n"
+            "  Local-only testing with no auth: IMPRINT_HTTP_NO_AUTH=1 (forces 127.0.0.1;\n"
+            "  never put a tunnel in front of it).",
+            file=sys.stderr, flush=True,
+        )
+        sys.exit(1)
+    host = HTTP_HOST
+    if NO_AUTH and not ACCESS_TOKEN:
+        host = "127.0.0.1"
+        print("imprint-memory: WARNING — HTTP mode running WITHOUT auth on 127.0.0.1. "
+              "Do not expose this port through any tunnel or port forward.",
+              file=sys.stderr, flush=True)
+    if ACCESS_TOKEN and not (CLIENT_ID and CLIENT_SECRET):
+        print("imprint-memory: note — no OAuth client_id/client_secret configured; "
+              "the OAuth endpoints are disabled, only `Authorization: Bearer <token>` works.",
+              file=sys.stderr, flush=True)
+
+    def _token_ok(auth_header: str) -> bool:
+        expected = f"Bearer {ACCESS_TOKEN}"
+        return _hmac.compare_digest(auth_header.encode(), expected.encode())
 
     class OAuthMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request, call_next):
             if request.url.path in ("/oauth/token", "/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource", "/oauth/authorize"):
                 return await call_next(request)
-            client = request.client
-            is_local = bool(client and client.host in ("127.0.0.1", "::1", "localhost"))
-            # No token configured: allow localhost only, refuse remote — a default
-            # `--http` bind on 0.0.0.0 must not expose private memory to the LAN.
             if not ACCESS_TOKEN:
-                if is_local:
-                    return await call_next(request)
-                return JSONResponse(
-                    {"error": "unauthorized: set OAUTH_ACCESS_TOKEN to allow non-local access"},
-                    status_code=401,
-                )
-            if is_local:
+                # Only reachable with IMPRINT_HTTP_NO_AUTH=1, bound to loopback.
                 return await call_next(request)
-            auth = request.headers.get("authorization", "")
-            if auth == f"Bearer {ACCESS_TOKEN}":
+            if _token_ok(request.headers.get("authorization", "")):
                 return await call_next(request)
             return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    def _client_ok(params: dict) -> bool:
+        # OAuth flows hand out ACCESS_TOKEN, so they must prove the client secret.
+        if not (CLIENT_ID and CLIENT_SECRET and ACCESS_TOKEN):
+            return False
+        return (_hmac.compare_digest(params.get("client_id", "").encode(), CLIENT_ID.encode())
+                and _hmac.compare_digest(params.get("client_secret", "").encode(), CLIENT_SECRET.encode()))
 
     app = mcp.streamable_http_app()
     from starlette.routing import Route as _Route
@@ -471,6 +501,11 @@ def _run_http():
         state = request.query_params.get("state", "")
         if not redirect_uri:
             return JSONResponse({"error": "missing redirect_uri"}, status_code=400)
+        now = _time.time()
+        for k in [k for k, v in _pending_auth_codes.items() if v["expires_at"] < now]:
+            del _pending_auth_codes[k]
+        if len(_pending_auth_codes) >= 256:
+            return JSONResponse({"error": "temporarily_unavailable"}, status_code=503)
         code = _secrets.token_urlsafe(32)
         _pending_auth_codes[code] = {
             "redirect_uri": redirect_uri,
@@ -497,9 +532,7 @@ def _run_http():
         grant_type = params.get("grant_type", "")
 
         if grant_type == "client_credentials":
-            if (CLIENT_ID and CLIENT_SECRET
-                    and params.get("client_id") == CLIENT_ID
-                    and params.get("client_secret") == CLIENT_SECRET):
+            if _client_ok(params):
                 return JSONResponse({
                     "access_token": ACCESS_TOKEN,
                     "token_type": "bearer",
@@ -519,10 +552,8 @@ def _run_http():
                 return JSONResponse({"error": "invalid_grant", "error_description": "unknown or expired code"}, status_code=400)
             if params.get("redirect_uri", "") != pending["redirect_uri"]:
                 return JSONResponse({"error": "invalid_grant", "error_description": "redirect_uri mismatch"}, status_code=400)
-            if CLIENT_ID and CLIENT_SECRET:
-                if (params.get("client_id") != CLIENT_ID
-                        or params.get("client_secret") != CLIENT_SECRET):
-                    return JSONResponse({"error": "invalid_client"}, status_code=401)
+            if not _client_ok(params):
+                return JSONResponse({"error": "invalid_client"}, status_code=401)
             return JSONResponse({
                 "access_token": ACCESS_TOKEN,
                 "token_type": "bearer",
@@ -537,8 +568,8 @@ def _run_http():
     app.routes.insert(3, Route("/oauth/token", oauth_token, methods=["POST"]))
     app.add_middleware(OAuthMiddleware)
 
-    print(f"imprint-memory HTTP mode (OAuth): http://{HTTP_HOST}:{HTTP_PORT}/mcp", flush=True)
-    config = uvicorn.Config(app, host=HTTP_HOST, port=HTTP_PORT, log_level="info")
+    print(f"imprint-memory HTTP mode (OAuth): http://{host}:{HTTP_PORT}/mcp", flush=True)
+    config = uvicorn.Config(app, host=host, port=HTTP_PORT, log_level="info")
     server = uvicorn.Server(config)
     anyio.run(server.serve)
 

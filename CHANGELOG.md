@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.1 — 2026-10-20
+
+Security + install fix for HTTP mode.
+
+- **No more localhost bypass.** The HTTP middleware let any request from
+  `127.0.0.1` skip the bearer-token check. Every tunnel connects from
+  localhost; cloudflared forwards the client IP so uvicorn saw the real
+  address, but plain TCP forwarders (frp, ssh -R, socat) don't, which turned
+  the bypass into "anyone with the URL gets in". The token is now always
+  required.
+- **HTTP mode needs a token to start.** Without `~/.imprint-oauth.json` or
+  `OAUTH_ACCESS_TOKEN` the server exits with instructions. Local no-auth
+  testing is opt-in via `IMPRINT_HTTP_NO_AUTH=1` and is forced onto 127.0.0.1.
+- **Default bind is 127.0.0.1** (was 0.0.0.0). Set `IMPRINT_HTTP_HOST=0.0.0.0`
+  for LAN/Docker; the token is required either way.
+- **OAuth endpoints require the client secret** for both grant types; with no
+  client id/secret configured they hand out nothing. Token and secret checks
+  use constant-time comparison; pending auth codes are capped.
+- **Pin `mcp<2`.** mcp 2.x renamed `FastMCP`, so fresh installs of 0.4.0 crashed
+  on import.
+
 ## 0.3.11 — 2026-05-29
 
 Chunk summarization via any OpenAI-compatible API + per-session chunk boundaries.

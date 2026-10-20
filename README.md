@@ -15,6 +15,11 @@ You: "Remember I'm allergic to shellfish"
 Claude: (recalls your allergy before suggesting a recipe)
 ```
 
+> **Security update — 0.4.1 (Oct 2026).** If you run HTTP mode (`imprint-memory --http`), upgrade: `pip install -U imprint-memory`.
+> - Up to 0.4.0, requests from `127.0.0.1` skipped the token check. Cloudflare Tunnel forwards the real client IP so it stayed locked, but plain TCP forwarders (frp, ssh -R, socat, many port-forward services) make every outside request look local, so the memory was open to anyone with the URL. 0.4.1 always requires the token and won't start HTTP mode without one.
+> - 0.1.0 (and git installs from before 2026-05-17) let anyone in when no credentials were set and shipped a `cc_execute` tool that could drive your local Claude Code. If you ever exposed one of those, upgrade and assume the memory was readable.
+> - 0.4.0 and earlier also broke on install once `mcp` 2.x came out; 0.4.1 pins `mcp<2`.
+
 ## What it does
 
 - **Captures every turn automatically** — each surface feeds the same
@@ -394,8 +399,10 @@ All via environment variables. Defaults work out of the box for local use.
 | `GOOGLE_API_KEYS` | unset | Multiple Google keys (comma-separated, round-robin) |
 | `CF_ACCOUNT_ID` | unset | Cloudflare account for query expansion |
 | `CF_API_TOKEN` | unset | Cloudflare API token |
-| `IMPRINT_HTTP_HOST` | `0.0.0.0` | HTTP mode bind address |
+| `IMPRINT_HTTP_HOST` | `127.0.0.1` | HTTP mode bind address (tunnels connect to localhost; use `0.0.0.0` only for LAN/Docker) |
 | `IMPRINT_HTTP_PORT` | `8000` | HTTP mode port |
+| `OAUTH_ACCESS_TOKEN` / `OAUTH_CLIENT_ID` / `OAUTH_CLIENT_SECRET` | unset | HTTP mode credentials if `~/.imprint-oauth.json` doesn't exist. **HTTP mode refuses to start without an access token.** |
+| `IMPRINT_HTTP_NO_AUTH` | unset | `1` = run HTTP mode with no auth, forced onto 127.0.0.1. Local testing only; never tunnel it. |
 | `IMPRINT_HOOK_LANG` | `en` | Hook reminder language |
 | `STOPWORD_THRESHOLD` | `0.15` | Auto-stopword frequency threshold |
 | `MESSAGE_BUS_LIMIT` | `40` | Max messages in bus |
@@ -456,6 +463,11 @@ Built on top of these open-source libraries:
 ... 几周后，新对话 ...
 Claude: (推荐菜谱前自动回忆起你的过敏)
 ```
+
+> **安全更新 · 0.4.1（2026-10）** 用 HTTP 模式（`imprint-memory --http`）的请升级：`pip install -U imprint-memory`。
+> - 0.4.0 及以前，来自 `127.0.0.1` 的请求不验 token。Cloudflare Tunnel 会带上真实来访 IP，所以照文档走是锁着的；但 frp、ssh -R、花生壳这类纯转发的内网穿透会让外面的请求全长得像本机，拿到地址的人都能读写记忆。0.4.1 起一律验 token，没配 token 不让起 HTTP 模式。
+> - 0.1.0（以及 2026-05-17 前从 git 装的）没配凭据时谁都能进，还带一个能指挥本机 Claude Code 的 `cc_execute`。如果你曾把这些版本暴露出去，请升级，并当作记忆已经可能被读过。
+> - mcp 出了 2.x 后旧版装完会直接报错，0.4.1 钉了 `mcp<2`。
 
 ## 能做什么
 
